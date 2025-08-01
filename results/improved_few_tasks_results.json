@@ -1,0 +1,38 @@
+{
+  "test_0000": {
+    "solved": false,
+    "accuracy": 0.0,
+    "correct": 0,
+    "total": 3,
+    "test_input_shape": [
+      13,
+      13
+    ],
+    "processing_time": 24.978195667266846,
+    "timeout": false
+  },
+  "test_0001": {
+    "solved": false,
+    "accuracy": 0.0,
+    "correct": 0,
+    "total": 3,
+    "test_input_shape": [
+      20,
+      20
+    ],
+    "processing_time": 60.174373626708984,
+    "timeout": false
+  },
+  "test_0002": {
+    "solved": false,
+    "accuracy": 0.0,
+    "correct": 0,
+    "total": 3,
+    "test_input_shape": [
+      10,
+      10
+    ],
+    "processing_time": 44.49133658409119,
+    "timeout": false
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "total_tasks": 5,
+  "solutions_found": 0,
+  "average_accuracy": 0.0,
+  "results": [
+    {
+      "task_id": "train_0000",
+      "accuracy": 0.0,
+      "demo_pairs": 3,
+      "solution_found": false
+    },
+    {
+      "task_id": "train_0001",
+      "accuracy": 0.0,
+      "demo_pairs": 2,
+      "solution_found": false
+    },
+    {
+      "task_id": "train_0002",
+      "accuracy": 0.0,
+      "demo_pairs": 5,
+      "solution_found": false
+    },
+    {
+      "task_id": "train_0003",
+      "accuracy": 0.0,
+      "demo_pairs": 3,
+      "solution_found": false
+    },
+    {
+      "task_id": "train_0004",
+      "accuracy": 0.0,
+      "demo_pairs": 3,
+      "solution_found": false
+    }
+  ]
+}

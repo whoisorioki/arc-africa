@@ -41,9 +41,10 @@ ARC_DSL_GRAMMAR = r"""
     ?literal: ESCAPED_STRING
             | SIGNED_NUMBER
             | COLOR
+            | "input"
 
     // Define explicit Terminals to remove all ambiguity
-    PRIMITIVE_NAME: "colorfilter" | "fill" | "rotate90" | "horizontal_mirror" | "vertical_mirror" | "replace_color" | "compose" | "chain" | "find_objects" | "select_largest_object" | "select_smallest_object" | "count_objects" | "find_symmetry_axis" | "complete_symmetry" | "find_pattern_repetition" | "align_objects" | "crop" | "remove" | "move" | "segment_grid" | "get_color"
+    PRIMITIVE_NAME: "colorfilter" | "fill" | "rotate90" | "horizontal_mirror" | "vertical_mirror" | "replace_color" | "compose" | "chain" | "find_objects" | "select_largest_object" | "select_smallest_object" | "count_objects" | "find_symmetry_axis" | "complete_symmetry" | "find_pattern_repetition" | "align_objects" | "crop" | "remove" | "move" | "segment_grid" | "get_color" | "conditional_transform"
     COLOR: "'red'" | "'blue'" | "'green'" | "'yellow'" | "'black'" | "'cyan'" | "'magenta'" | "'white'" | "'gray'"
     VARIABLE: /[a-zA-Z_][a-zA-Z0-9_]*/
     

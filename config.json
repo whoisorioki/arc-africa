@@ -1,0 +1,51 @@
+{
+    "IamFleetRole": "arn:aws:iam::940252205072:role/spot",
+    "AllocationStrategy": "capacityOptimized",
+    "TargetCapacity": 1,
+    "ValidFrom": "2025-08-01T07:09:55.000Z",
+    "ValidUntil": "2026-08-01T07:09:55.000Z",
+    "TerminateInstancesWithExpiration": true,
+    "Type": "maintain",
+    "SpotMaxTotalPrice": "5",
+    "InstanceInterruptionBehavior": "hibernate",
+    "LaunchSpecifications": [
+        {
+            "ImageId": "ami-027b7790352a6e104",
+            "KeyName": "arc-us-key",
+            "BlockDeviceMappings": [
+                {
+                    "DeviceName": "/dev/sda1",
+                    "Ebs": {
+                        "DeleteOnTermination": true,
+                        "Iops": 16000,
+                        "SnapshotId": "snap-0f53d80ec8fa7ebb4",
+                        "VolumeSize": 400,
+                        "VolumeType": "gp3",
+                        "Encrypted": false,
+                        "Throughput": 125
+                    }
+                },
+                {
+                    "DeviceName": "/dev/sdb",
+                    "VirtualName": "ephemeral0",
+                    "Ebs": {}
+                },
+                {
+                    "DeviceName": "/dev/sdc",
+                    "VirtualName": "ephemeral1",
+                    "Ebs": {}
+                }
+            ],
+            "Monitoring": {
+                "Enabled": true
+            },
+            "SubnetId": "subnet-0faf5522f7b920116, subnet-068b6499b017ae63c, subnet-0328a4e965def834e",
+            "SecurityGroups": [
+                {
+                    "GroupId": "sg-0907f46ba2874801b"
+                }
+            ],
+            "InstanceType": "g4dn.2xlarge"
+        }
+    ]
+}

@@ -1,0 +1,35 @@
+[
+  {
+    "task_id": "test_0000",
+    "predictions": [
+      [
+        "rotate180",
+        "replace_color_2_1",
+        "replace_color_1_2"
+      ]
+    ],
+    "num_pairs": 1
+  },
+  {
+    "task_id": "test_0001",
+    "predictions": [
+      [
+        "rotate180",
+        "replace_color_2_1",
+        "replace_color_1_2"
+      ]
+    ],
+    "num_pairs": 1
+  },
+  {
+    "task_id": "test_0002",
+    "predictions": [
+      [
+        "replace_color_2_1",
+        "rotate180",
+        "replace_color_1_2"
+      ]
+    ],
+    "num_pairs": 1
+  }
+]

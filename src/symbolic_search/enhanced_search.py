@@ -20,20 +20,18 @@ from src.dsl.primitives import (
     replace_color,
     compose,
     chain,
-    find_objects,
-    select_largest_object,
-    select_smallest_object,
-    count_objects,
-    find_symmetry_axis,
-    complete_symmetry,
-    find_pattern_repetition,
-    align_objects,
-    conditional_transform,
     crop,
-    remove,
     fill,
     colorfilter,
     move,
+    scale,
+    pad,
+    identity,
+    negate,
+    threshold,
+    blur,
+    edge_detect,
+    median_filter,
 )
 
 
@@ -91,41 +89,34 @@ class EnhancedBeamSearch:
 
         # Advanced primitives for complex patterns
         self.advanced_primitives = [
-            # Pattern recognition
-            find_symmetry_axis,
-            complete_symmetry,
-            find_pattern_repetition,
-            # Object manipulation
-            select_largest_object,
-            select_smallest_object,
-            count_objects,
-            # Spatial organization
-            lambda grid: align_objects(grid, "center"),
-            lambda grid: align_objects(grid, "left"),
-            lambda grid: align_objects(grid, "right"),
-            lambda grid: align_objects(grid, "top"),
-            lambda grid: align_objects(grid, "bottom"),
-            # Conditional transformations
-            lambda grid: conditional_transform(grid, "has_objects"),
-            lambda grid: conditional_transform(grid, "is_symmetric"),
-            lambda grid: conditional_transform(grid, "has_pattern"),
+            # Basic transformations
+            lambda grid: rotate90(rotate90(grid)),  # rotate180
+            lambda grid: rotate90(rotate90(rotate90(grid))),  # rotate270
             # Utility operations
-            lambda grid: (
-                crop(grid, ((1, 1), (grid.shape[0] - 2, grid.shape[1] - 2)))
-                if grid.shape[0] > 2 and grid.shape[1] > 2
-                else grid
-            ),
+            lambda grid: crop(grid, 1, 1, grid.shape[1]-1, grid.shape[0]-1) if grid.shape[0] > 2 and grid.shape[1] > 2 else grid,
+            lambda grid: pad(grid, 1),
+            lambda grid: scale(grid, 2),
+            # Color operations
+            lambda grid: colorfilter(grid, 1),
+            lambda grid: colorfilter(grid, 2),
+            lambda grid: colorfilter(grid, 3),
+            # Threshold operations
+            lambda grid: threshold(grid, 1),
+            lambda grid: threshold(grid, 2),
+            # Edge detection and blur
+            edge_detect,
+            blur,
+            median_filter,
         ]
 
         # Composed primitives for complex transformations
         self.composed_primitives = [
-            compose(horizontal_mirror, rotate90),
-            compose(vertical_mirror, horizontal_mirror),
-            compose(rotate90, horizontal_mirror),
-            compose(rotate90, vertical_mirror),
-            chain([rotate90, horizontal_mirror]),
-            chain([horizontal_mirror, vertical_mirror]),
-            chain([rotate90, rotate90, horizontal_mirror]),
+            lambda grid: horizontal_mirror(rotate90(grid)),
+            lambda grid: vertical_mirror(horizontal_mirror(grid)),
+            lambda grid: rotate90(horizontal_mirror(grid)),
+            lambda grid: rotate90(vertical_mirror(grid)),
+            lambda grid: horizontal_mirror(rotate90(rotate90(grid))),
+            lambda grid: vertical_mirror(rotate90(rotate90(rotate90(grid)))),
         ]
 
         # Combine all primitives
@@ -179,7 +170,7 @@ class EnhancedBeamSearch:
             )
 
             # Weighted combination
-            similarity = (
+            similarity = float(
                 0.4 * pixel_similarity
                 + 0.2 * count_similarity
                 + 0.2 * size_similarity
@@ -190,7 +181,7 @@ class EnhancedBeamSearch:
 
         except Exception:
             # Fallback to pixel similarity only
-            return pixel_similarity
+            return float(pixel_similarity)
 
     def _evaluate_candidate(
         self,
@@ -227,7 +218,7 @@ class EnhancedBeamSearch:
 
         score = avg_similarity - length_penalty + exact_match_bonus + consistency_bonus
 
-        return score
+        return float(score)
 
     def _generate_candidates(
         self,
@@ -349,7 +340,6 @@ class EnhancedBeamSearch:
         # Final verification
         if verifier and best_program:
             try:
-
                 def solution_fn(grid):
                     result = grid.copy()
                     for fn in best_program:
@@ -357,19 +347,12 @@ class EnhancedBeamSearch:
                     return result
 
                 if verifier(solution_fn, input_grids, output_grids):
-                    print(
-                        f"  ✅ Verified solution found: {len(best_program)} primitives"
-                    )
+                    print(f"  ✅ Verified solution found: {len(best_program)} primitives")
                     return best_program, True
             except Exception as e:
                 print(f"  ❌ Verification failed: {e}")
 
-        # Return best program even if not verified
-        if best_score > 0.8:
-            print(f"  🎯 High-scoring solution found: {best_score:.3f}")
-            return best_program, True
-
-        print(f"  ❌ No good solution found. Best score: {best_score:.3f}")
+        print(f"  ❌ No verified solution found. Best score: {best_score:.3f}")
         return [], False
 
 

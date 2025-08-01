@@ -32,17 +32,15 @@ from src.dsl.primitives import (
     compose,
     chain,
     replace_color,
-    remove,
     crop,
-    find_objects,
-    select_largest_object,
-    select_smallest_object,
-    count_objects,
-    find_symmetry_axis,
-    complete_symmetry,
-    find_pattern_repetition,
-    align_objects,
-    conditional_transform,
+    scale,
+    pad,
+    identity,
+    negate,
+    threshold,
+    blur,
+    edge_detect,
+    median_filter,
 )
 from src.data_pipeline.segmentation import segment_grid
 
@@ -100,65 +98,35 @@ class EnhancedNeuroSymbolicSolver:
         else:
             self.device = torch.device(device)
 
-        # Load neural guide
-        self.neural_guide = self._load_neural_guide(model_path)
-
-        # Define available primitives
+        # Define available primitives first - use the original 17 primitives that the persistent model was trained on
         self.primitives = {
-            # Basic geometric transformations
+            # Basic geometric transformations (5)
             "rotate90": rotate90,
-            "rotate180": partial(rotate90, k=2),
-            "rotate270": partial(rotate90, k=3),
             "horizontal_mirror": horizontal_mirror,
             "vertical_mirror": vertical_mirror,
-            # Color transformations
-            "replace_color_1_2": partial(replace_color, src_color=1, dst_color=2),
-            "replace_color_2_1": partial(replace_color, src_color=2, dst_color=1),
-            "replace_color_1_3": partial(replace_color, src_color=1, dst_color=3),
-            "replace_color_3_1": partial(replace_color, src_color=3, dst_color=1),
-            "replace_color_2_3": partial(replace_color, src_color=2, dst_color=3),
-            "replace_color_3_2": partial(replace_color, src_color=3, dst_color=2),
-            # Object selection and manipulation
-            "select_largest_object": select_largest_object,
-            "select_smallest_object": select_smallest_object,
-            "count_objects": count_objects,
-            # Pattern recognition and completion
-            "find_symmetry_axis": find_symmetry_axis,
-            "complete_symmetry": complete_symmetry,
-            "find_pattern_repetition": find_pattern_repetition,
-            # Spatial organization
-            "align_objects_center": partial(align_objects, alignment="center"),
-            "align_objects_left": partial(align_objects, alignment="left"),
-            "align_objects_right": partial(align_objects, alignment="right"),
-            "align_objects_top": partial(align_objects, alignment="top"),
-            "align_objects_bottom": partial(align_objects, alignment="bottom"),
-            # Conditional transformations
-            "conditional_has_objects": partial(
-                conditional_transform, condition="has_objects"
-            ),
-            "conditional_is_symmetric": partial(
-                conditional_transform, condition="is_symmetric"
-            ),
-            "conditional_has_pattern": partial(
-                conditional_transform, condition="has_pattern"
-            ),
-            # Utility operations
-            "crop_center": lambda grid: (
-                crop(grid, ((1, 1), (grid.shape[0] - 2, grid.shape[1] - 2)))
-                if grid.shape[0] > 2 and grid.shape[1] > 2
-                else grid
-            ),
-            # Composed primitives
-            "rotate90_then_horizontal_mirror": compose(horizontal_mirror, rotate90),
-            "horizontal_then_vertical_mirror": compose(
-                vertical_mirror, horizontal_mirror
-            ),
-            "chain_rotate90_mirror": chain([rotate90, horizontal_mirror]),
-            "symmetry_then_align": compose(
-                partial(align_objects, alignment="center"), complete_symmetry
-            ),
+            "rotate180": lambda grid: rotate90(rotate90(grid)),
+            "rotate270": lambda grid: rotate90(rotate90(rotate90(grid))),
+            
+            # Color transformations (6)
+            "replace_color_1_2": lambda grid: replace_color(grid, old_color=1, new_color=2),
+            "replace_color_2_1": lambda grid: replace_color(grid, old_color=2, new_color=1),
+            "replace_color_1_3": lambda grid: replace_color(grid, old_color=1, new_color=3),
+            "replace_color_3_1": lambda grid: replace_color(grid, old_color=3, new_color=1),
+            "replace_color_2_3": lambda grid: replace_color(grid, old_color=2, new_color=3),
+            "replace_color_3_2": lambda grid: replace_color(grid, old_color=3, new_color=2),
+            
+            # Basic operations (6)
+            "fill_1": lambda grid: fill(grid, 1),
+            "fill_2": lambda grid: fill(grid, 2),
+            "fill_3": lambda grid: fill(grid, 3),
+            "colorfilter_1": lambda grid: colorfilter(grid, 1),
+            "colorfilter_2": lambda grid: colorfilter(grid, 2),
+            "colorfilter_3": lambda grid: colorfilter(grid, 3),
         }
         self.primitive_names = list(self.primitives.keys())
+
+        # Load neural guide after primitives are defined
+        self.neural_guide = self._load_neural_guide(model_path)
 
         print(f"✓ Enhanced Neuro-Symbolic Solver initialized")
         print(f"✓ Device: {self.device}")
@@ -169,6 +137,23 @@ class EnhancedNeuroSymbolicSolver:
 
     def _load_neural_guide(self, model_path: str) -> torch.nn.Module:
         """Load the enhanced neural guide model."""
+        if model_path is None:
+            print("⚠️  No model path provided, creating untrained model")
+            # Create untrained model
+            model = create_neural_guide(
+                num_primitives=len(self.primitive_names),
+                grid_size=48,
+                max_colors=64,
+                embed_dim=128,
+                num_layers=4,
+                num_heads=8,
+                dropout=0.1,
+            )
+            model.to(self.device)
+            model.eval()
+            print("✓ Created untrained neural guide model")
+            return model
+            
         if not os.path.exists(model_path):
             print(f"⚠️  Enhanced model not found at {model_path}, using basic model")
             model_path = "models/neural_guide_best.pth"
@@ -184,20 +169,48 @@ class EnhancedNeuroSymbolicSolver:
             model = create_neural_guide(
                 num_primitives=config["num_primitives"],
                 grid_size=config["grid_size"],
-                max_colors=config.get("max_colors", 64),  # Increased to 64
-                embed_dim=config.get("embed_dim", 128),  # Reduced for memory
+                max_colors=config.get("max_colors", 64),
+                embed_dim=config.get("embed_dim", 128),
                 num_layers=config["num_layers"],
                 num_heads=config["num_heads"],
                 dropout=config["dropout"],
             )
         else:
-            # Fallback to default configuration
+            # Infer configuration from the saved weights
+            # Check the output projection layer to determine number of primitives
+            if "output_proj.weight" in checkpoint["model_state_dict"]:
+                num_primitives = checkpoint["model_state_dict"]["output_proj.weight"].shape[0]
+            else:
+                num_primitives = 17  # Default for persistent model
+            
+            # Check input embedding to determine max_colors
+            if "input_embedding.weight" in checkpoint["model_state_dict"]:
+                max_colors = checkpoint["model_state_dict"]["input_embedding.weight"].shape[0]
+            else:
+                max_colors = 21  # Default for persistent model
+            
+            # The architecture adds 1 to max_colors, so we need to subtract 1
+            # to match the saved weights
+            max_colors = max_colors - 1
+            
+            # Count transformer layers
+            num_layers = 0
+            for key in checkpoint["model_state_dict"].keys():
+                if "transformer.layers." in key:
+                    layer_num = int(key.split(".")[2])
+                    num_layers = max(num_layers, layer_num + 1)
+            
+            if num_layers == 0:
+                num_layers = 2  # Default for persistent model
+            
+            print(f"📋 Inferred model config: {num_primitives} primitives, {max_colors} colors, {num_layers} layers")
+            
             model = create_neural_guide(
-                num_primitives=len(self.primitive_names),
+                num_primitives=num_primitives,
                 grid_size=48,
-                max_colors=64,  # Increased to 64
-                embed_dim=128,  # Reduced for memory
-                num_layers=4,
+                max_colors=max_colors,
+                embed_dim=128,
+                num_layers=num_layers,
                 num_heads=8,
                 dropout=0.1,
             )
@@ -277,7 +290,7 @@ class EnhancedNeuroSymbolicSolver:
                 if c1 != c2:
                     pname = f"replace_color_{c1}_{c2}"
                     dynamic_primitives[pname] = partial(
-                        replace_color, src_color=c1, dst_color=c2
+                        replace_color, old_color=c1, new_color=c2
                     )
 
         # Object-based primitives
@@ -287,13 +300,8 @@ class EnhancedNeuroSymbolicSolver:
                 min_size = min(sizes)
                 max_size = max(sizes)
 
-                # Size-based selection primitives
-                dynamic_primitives[f"select_size_{min_size}"] = (
-                    lambda grid, size=min_size: select_smallest_object(grid)
-                )
-                dynamic_primitives[f"select_size_{max_size}"] = (
-                    lambda grid, size=max_size: select_largest_object(grid)
-                )
+                # Size-based selection primitives (removed - functions don't exist)
+                pass
 
         # Add base primitives
         for name, func in self.primitives.items():
