@@ -1,3 +1,0 @@
-task_id,accuracy,num_tests,num_correct,solve_time,error
-test_0000,0.0,1,0,,[enforce fail at alloc_cpu.cpp:116] data. DefaultCPUAllocator: not enough memory: you tried to allocate 36691771392 bytes.
-test_0001,0.0,1,0,,[enforce fail at alloc_cpu.cpp:116] data. DefaultCPUAllocator: not enough memory: you tried to allocate 52999225344 bytes.

@@ -87,7 +87,7 @@ def generate_color_primitives(
 
             def make_colorfilter(c):
                 def colorfilter_variant(grid):
-                    return colorfilter(segment_grid(grid), c)
+                    return colorfilter(grid, c)
 
                 colorfilter_variant.__name__ = f"colorfilter_{c}"
                 return colorfilter_variant
@@ -100,8 +100,7 @@ def generate_color_primitives(
 
             def make_fill(c):
                 def fill_variant(grid):
-                    objects = segment_grid(grid)
-                    return fill(grid, objects, c)
+                    return fill(grid, c)
 
                 fill_variant.__name__ = f"fill_{c}"
                 return fill_variant
@@ -161,27 +160,15 @@ def generate_object_primitives(
 
                 def make_move(target_obj, movement):
                     def move_variant(grid):
-                        return move(grid, target_obj, movement)
+                        dx, dy = movement
+                        return move(grid, dx, dy)
 
                     move_variant.__name__ = f"move_obj_{target_obj['color']}_{target_obj['size']}_{movement}"
                     return move_variant
 
                 variants.append(make_move(obj, delta))
 
-    elif base_primitive.__name__ == "remove":
-        # Generate remove variants for each object
-        for obj in objects:
 
-            def make_remove(target_obj):
-                def remove_variant(grid):
-                    return remove(grid, [target_obj])
-
-                remove_variant.__name__ = (
-                    f"remove_obj_{target_obj['color']}_{target_obj['size']}"
-                )
-                return remove_variant
-
-            variants.append(make_remove(obj))
 
     return variants
 
@@ -210,7 +197,7 @@ def generate_dynamic_primitives(
     color_primitives = [colorfilter, fill, replace_color]
 
     # Object-based primitives that can be parameterized
-    object_primitives = [move, remove]
+    object_primitives = [move]
 
     all_primitives = base_primitives.copy()
 

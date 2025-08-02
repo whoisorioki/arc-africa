@@ -210,4 +210,17 @@ __marimo__/
 data
 tests
 scripts
-docs
+docs.env
+whoisorioki_accessKeys.csv
+upload_to_s3.bat
+*.csv
+*.bat
+# AWS credentials and large files
+whoisorioki_accessKeys.csv
+upload_to_s3.bat
+AWSCLIV2.msi
+awscliv2.zip
+*.csv
+*.bat
+*.msi
+*.zip

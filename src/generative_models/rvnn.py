@@ -26,8 +26,8 @@ class Grammar:
         """
         self.grammar_str = grammar_str
         self.parser = Lark(
-            grammar_str, start="program", parser="lalr", keep_all_tokens=True
-        )  # Re-added keep_all_tokens
+            grammar_str, start="program", keep_all_tokens=True
+        )  # Use default parser like working direct test
         self.productions = self._get_productions()
         self.prod_to_idx = {prod: i for i, prod in enumerate(self.productions)}
         self.idx_to_prod = {i: prod for i, prod in enumerate(self.productions)}

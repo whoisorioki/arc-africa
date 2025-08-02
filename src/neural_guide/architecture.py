@@ -105,48 +105,44 @@ class NeuralGuide(nn.Module):
         self,
         grid_size: int = 48,
         embed_dim: int = 128,  # Further reduced for memory
-        num_heads: int = 8,
-        num_layers: int = 3,
-        max_colors: int = 64,  # Increased to 64
-        num_primitives: int = 6,
+        num_heads: int = 4,  # Changed to match persistent model
+        num_layers: int = 2,  # Changed to match persistent model
+        max_colors: int = 20,  # Changed to match persistent model
+        num_primitives: int = 17,  # Changed to match persistent model (17 primitives)
         dropout: float = 0.1,
     ):
         """
         Args:
             grid_size: Maximum grid size (default: 48).
             embed_dim: Embedding dimension (default: 128).
-            num_heads: Number of attention heads.
-            num_layers: Number of Transformer layers (default: 3).
-            max_colors: Maximum number of colors.
-            num_primitives: Number of DSL primitives to predict.
+            num_heads: Number of attention heads (default: 4).
+            num_layers: Number of Transformer layers (default: 2).
+            max_colors: Maximum number of colors (default: 20).
+            num_primitives: Number of DSL primitives to predict (default: 8).
             dropout: Dropout rate.
         """
         super().__init__()
         self.grid_size = grid_size
         self.embed_dim = embed_dim
+        self.max_colors = max_colors
         self.num_primitives = num_primitives
 
-        # Grid embedding layer
-        self.grid_embedding = GridEmbedding(grid_size, embed_dim, max_colors)
-
-        # Transformer encoder
+        # Embeddings (matching persistent model)
+        self.input_embedding = nn.Embedding(max_colors + 1, embed_dim)
+        self.output_embedding = nn.Embedding(max_colors + 1, embed_dim)
+        
+        # Transformer (matching persistent model)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
-            dim_feedforward=embed_dim * 4,
+            dim_feedforward=512,  # Changed to match persistent model
             dropout=dropout,
-            batch_first=True,
+            batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-
-        # Global pooling and classification head
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
-        self.classifier = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(embed_dim // 2, num_primitives),
-        )
+        
+        # Output projection (matching persistent model)
+        self.output_proj = nn.Linear(embed_dim, num_primitives)
 
     def forward(
         self, input_grids: torch.Tensor, output_grids: torch.Tensor
@@ -160,36 +156,38 @@ class NeuralGuide(nn.Module):
             Tensor of shape (batch_size, num_primitives) with primitive probabilities
         """
         batch_size = input_grids.shape[0]
-        # Stack input and output grids
-        grids = torch.stack(
-            [input_grids, output_grids], dim=1
-        )  # (batch_size, 2, grid_size, grid_size)
-        # All grids should already be padded to grid_size, so no further padding is needed
-        assert (
-            grids.shape[2] == self.grid_size and grids.shape[3] == self.grid_size
-        ), f"All grids must be padded to ({self.grid_size}, {self.grid_size}), got ({grids.shape[2]}, {grids.shape[3]})"
-        # Get embeddings
-        embeddings = self.grid_embedding(grids)
-        # Apply Transformer
-        encoded = self.transformer(embeddings)
-        # Global pooling
-        pooled = self.global_pool(encoded.transpose(1, 2))  # (batch_size, embed_dim, 1)
-        pooled = pooled.squeeze(-1)  # (batch_size, embed_dim)
-        # Classification
-        logits = self.classifier(pooled)  # (batch_size, num_primitives)
+        
+        # Clamp color values to valid range
+        input_grids = torch.clamp(input_grids, 0, self.max_colors)
+        output_grids = torch.clamp(output_grids, 0, self.max_colors)
+        
+        # Flatten grids and embed
+        input_flat = input_grids.view(batch_size, -1)
+        output_flat = output_grids.view(batch_size, -1)
+        
+        # Embed
+        input_emb = self.input_embedding(input_flat)
+        output_emb = self.output_embedding(output_flat)
+        
+        # Concatenate and transform
+        combined = torch.cat([input_emb, output_emb], dim=1)
+        transformed = self.transformer(combined)
+        pooled = torch.mean(transformed, dim=1)
+        logits = self.output_proj(pooled)
+        
         return logits
 
 
 def create_neural_guide(
     grid_size: int = 48,
     embed_dim: int = 128,  # Further reduced for memory
-    num_heads: int = 8,
-    num_layers: int = 3,
-    max_colors: int = 64,  # Increased to 64
-    num_primitives: int = 6,
+    num_heads: int = 4,  # Changed to match persistent model
+    num_layers: int = 2,  # Changed to match persistent model
+    max_colors: int = 20,  # Changed to match persistent model
+    num_primitives: int = 17,  # Changed to match persistent model (17 primitives)
     dropout: float = 0.1,
 ) -> NeuralGuide:
-    """Factory function to create a NeuralGuide model with defaults matching Colab training."""
+    """Factory function to create a NeuralGuide model with defaults matching persistent model."""
     return NeuralGuide(
         grid_size=grid_size,
         embed_dim=embed_dim,
