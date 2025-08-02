@@ -1,27 +1,26 @@
+#!/usr/bin/env python3
 """
-Enhanced Neuro-Symbolic Solver for Complex ARC Tasks
+Enhanced Neuro-Symbolic Solver with 39+ primitives.
 
-This module implements an enhanced solver that combines the improved neural guide
-with the enhanced beam search for better performance on complex ARC tasks.
+This solver combines neural guide predictions with symbolic search to solve ARC tasks.
+It uses the enhanced model trained on 39+ primitives including cropping, resizing, and other operations.
 """
 
+import json
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-import json
 import os
-from typing import List, Tuple, Dict, Optional, Callable
+import sys
 from pathlib import Path
-import copy
-from src.data_pipeline.augmentation import augment_demonstrations
-import torch.optim as optim
-import torch.nn as nn
-from functools import partial
-from collections import defaultdict
+from typing import List, Tuple, Dict, Optional, Callable
+import random
+from tqdm import tqdm
 
-from src.neural_guide.architecture import create_neural_guide
-from src.symbolic_search.enhanced_search import enhanced_beam_search
-from src.symbolic_search.verifier import verify_program
+# Add src to path
+sys.path.append(str(Path(__file__).parent.parent.parent))
+
+from src.neural_guide.enhanced_architecture import EnhancedNeuralGuide, create_enhanced_model, ENHANCED_TRAINING_CONFIG
 from src.dsl.primitives import (
     colorfilter,
     fill,
@@ -29,77 +28,124 @@ from src.dsl.primitives import (
     rotate90,
     horizontal_mirror,
     vertical_mirror,
-    compose,
-    chain,
     replace_color,
-    crop,
-    scale,
-    pad,
-    identity,
-    negate,
-    threshold,
-    blur,
-    edge_detect,
-    median_filter,
 )
-from src.data_pipeline.segmentation import segment_grid
 
 
-def pad_to_shape(grid, shape=(48, 48), pad_value=0):
-    """Pad a 2D numpy array to the target shape with pad_value."""
+def create_crop_primitive(target_shape: Tuple[int, int]):
+    """Create a cropping primitive that extracts a region of target_shape."""
+    def crop_grid(grid: np.ndarray) -> np.ndarray:
+        h, w = grid.shape
+        target_h, target_w = target_shape
+        
+        # Center the crop
+        start_h = max(0, (h - target_h) // 2)
+        start_w = max(0, (w - target_w) // 2)
+        
+        # Extract the region
+        cropped = grid[start_h:start_h + target_h, start_w:start_w + target_w]
+        
+        # Pad if necessary
+        if cropped.shape != target_shape:
+            padded = np.zeros(target_shape, dtype=grid.dtype)
+            actual_h, actual_w = cropped.shape
+            padded[:actual_h, :actual_w] = cropped
+            return padded
+        
+        return cropped
+    
+    return crop_grid
+
+
+def create_resize_primitive(target_shape: Tuple[int, int]):
+    """Create a resize primitive."""
+    def resize_grid(grid: np.ndarray) -> np.ndarray:
+        h, w = grid.shape
+        target_h, target_w = target_shape
+        
+        # Simple nearest neighbor resize
+        result = np.zeros(target_shape, dtype=grid.dtype)
+        
+        for i in range(target_h):
+            for j in range(target_w):
+                # Map target coordinates to source coordinates
+                src_i = int(i * h / target_h)
+                src_j = int(j * w / target_w)
+                
+                # Ensure bounds
+                src_i = min(src_i, h - 1)
+                src_j = min(src_j, w - 1)
+                
+                result[i, j] = grid[src_i, src_j]
+        
+        return result
+    
+    return resize_grid
+
+
+def create_remove_color_primitive(color: int):
+    """Create a primitive that removes a specific color."""
+    def remove_color(grid: np.ndarray) -> np.ndarray:
+        result = grid.copy()
+        result[result == color] = 0  # Replace with background
+        return result
+    
+    return remove_color
+
+
+def pad_to_shape(grid: np.ndarray, target_shape: Tuple[int, int]) -> np.ndarray:
+    """Pad a grid to the target shape with zeros."""
     h, w = grid.shape
-    target_h, target_w = shape
-    pad_h = max(target_h - h, 0)
-    pad_w = max(target_w - w, 0)
-    pad_top = pad_h // 2
-    pad_bottom = pad_h - pad_top
-    pad_left = pad_w // 2
-    pad_right = pad_w - pad_left
-    return np.pad(
-        grid, ((pad_top, pad_bottom), (pad_left, pad_right)), constant_values=pad_value
-    )
+    target_h, target_w = target_shape
+    
+    padded = np.zeros(target_shape, dtype=grid.dtype)
+    padded[:h, :w] = grid
+    
+    return padded
 
 
 class EnhancedNeuroSymbolicSolver:
-    """Enhanced neuro-symbolic solver with improved components."""
-
+    """Enhanced neuro-symbolic solver with 39+ primitives."""
+    
     def __init__(
         self,
-        model_path: str = "models/neural_guide_enhanced.pth",
-        top_k_primitives: int = 5,
+        model_path: str = "models/enhanced_neural_guide_best.pth",
+        top_k_primitives: int = 10,
         max_search_depth: int = 8,
-        beam_width: int = 20,
-        device: str = "auto",
-        use_enhanced_search: bool = True,
+        beam_width: int = 25,
         use_ttt: bool = True,
-        ttt_steps: int = 10,
+        use_enhanced_search: bool = True
     ):
-        """
-        Args:
-            model_path: Path to the enhanced neural guide model weights.
-            top_k_primitives: Number of top primitives to use from neural guide predictions.
-            max_search_depth: Maximum depth for symbolic search.
-            beam_width: Beam width for beam search.
-            device: Device to run the neural guide on.
-            use_enhanced_search: Whether to use enhanced beam search.
-            use_ttt: Whether to use test-time training.
-            ttt_steps: Number of TTT steps.
-        """
+        """Initialize the enhanced neuro-symbolic solver."""
+        self.model_path = model_path
         self.top_k_primitives = top_k_primitives
         self.max_search_depth = max_search_depth
         self.beam_width = beam_width
-        self.use_enhanced_search = use_enhanced_search
         self.use_ttt = use_ttt
-        self.ttt_steps = ttt_steps
-
+        self.use_enhanced_search = use_enhanced_search
+        
         # Set device
-        if device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
-
-        # Define available primitives first - use the original 17 primitives that the persistent model was trained on
-        self.primitives = {
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Create primitives
+        self.primitives = self._create_enhanced_primitives()
+        
+        # Load neural guide
+        self.neural_guide = self._load_neural_guide()
+        
+        print(f"✅ Enhanced Neuro-Symbolic Solver initialized")
+        print(f"✅ Device: {self.device}")
+        print(f"✅ Top-k primitives: {self.top_k_primitives}")
+        print(f"✅ Available primitives: {len(self.primitives)}")
+        print(f"✅ Enhanced search: {self.use_enhanced_search}")
+        print(f"✅ TTT enabled: {self.use_ttt}")
+    
+    def _create_enhanced_primitives(self):
+        """Create the enhanced primitive set with 39+ primitives."""
+        enhanced_primitives = {}
+        
+        # Original 17 primitives
+        original_primitives = {
             # Basic geometric transformations (5)
             "rotate90": rotate90,
             "horizontal_mirror": horizontal_mirror,
@@ -123,345 +169,256 @@ class EnhancedNeuroSymbolicSolver:
             "colorfilter_2": lambda grid: colorfilter(grid, 2),
             "colorfilter_3": lambda grid: colorfilter(grid, 3),
         }
-        self.primitive_names = list(self.primitives.keys())
-
-        # Load neural guide after primitives are defined
-        self.neural_guide = self._load_neural_guide(model_path)
-
-        print(f"✓ Enhanced Neuro-Symbolic Solver initialized")
-        print(f"✓ Device: {self.device}")
-        print(f"✓ Top-k primitives: {top_k_primitives}")
-        print(f"✓ Available primitives: {len(self.primitives)}")
-        print(f"✓ Enhanced search: {use_enhanced_search}")
-        print(f"✓ TTT enabled: {use_ttt}")
-
-    def _load_neural_guide(self, model_path: str) -> torch.nn.Module:
+        
+        enhanced_primitives.update(original_primitives)
+        
+        # Add cropping primitives for common output sizes
+        crop_sizes = [(9, 9), (10, 9), (12, 10), (8, 8), (10, 10), (12, 12), (15, 15), (20, 20)]
+        for h, w in crop_sizes:
+            enhanced_primitives[f"crop_{h}x{w}"] = create_crop_primitive((h, w))
+        
+        # Add resize primitives
+        resize_sizes = [(9, 9), (10, 9), (12, 10), (8, 8), (10, 10), (12, 12), (15, 15), (20, 20)]
+        for h, w in resize_sizes:
+            enhanced_primitives[f"resize_{h}x{w}"] = create_resize_primitive((h, w))
+        
+        # Add remove color primitives
+        for color in range(1, 10):  # Colors 1-9
+            enhanced_primitives[f"remove_color_{color}"] = create_remove_color_primitive(color)
+        
+        # Add copy primitive
+        enhanced_primitives["copy"] = lambda grid: grid.copy()
+        
+        # Add identity primitive
+        enhanced_primitives["identity"] = lambda grid: grid
+        
+        print(f"📊 Enhanced primitive set created: {len(enhanced_primitives)} primitives")
+        return enhanced_primitives
+    
+    def _load_neural_guide(self):
         """Load the enhanced neural guide model."""
-        if model_path is None:
-            print("⚠️  No model path provided, creating untrained model")
-            # Create untrained model
-            model = create_neural_guide(
-                num_primitives=len(self.primitive_names),
-                grid_size=48,
-                max_colors=64,
-                embed_dim=128,
-                num_layers=4,
-                num_heads=8,
-                dropout=0.1,
-            )
-            model.to(self.device)
-            model.eval()
-            print("✓ Created untrained neural guide model")
-            return model
+        if not os.path.exists(self.model_path):
+            print(f"⚠️  Model not found at {self.model_path}")
+            print(f"🔧 Creating new enhanced model with {len(self.primitives)} primitives")
             
-        if not os.path.exists(model_path):
-            print(f"⚠️  Enhanced model not found at {model_path}, using basic model")
-            model_path = "models/neural_guide_best.pth"
-            if not os.path.exists(model_path):
-                raise FileNotFoundError(f"No model found at {model_path}")
-
-        # Load model checkpoint
-        checkpoint = torch.load(model_path, map_location=self.device)
-
+            # Create new model with current primitive count
+            config = {
+                'max_colors': 21,
+                'embed_dim': 256,
+                'num_primitives': len(self.primitives),
+                'num_layers': 4,
+                'max_grid_size': 30
+            }
+            model = create_enhanced_model(config)
+            model.to(self.device)
+            
+            print(f"✅ Created new enhanced model with {len(self.primitives)} primitives")
+            return model
+        
+        # Load existing model
+        checkpoint = torch.load(self.model_path, map_location=self.device)
+        
         # Create model with saved configuration
         if "model_config" in checkpoint:
             config = checkpoint["model_config"]
-            model = create_neural_guide(
-                num_primitives=config["num_primitives"],
-                grid_size=config["grid_size"],
-                max_colors=config.get("max_colors", 64),
-                embed_dim=config.get("embed_dim", 128),
-                num_layers=config["num_layers"],
-                num_heads=config["num_heads"],
-                dropout=config["dropout"],
-            )
+            model = create_enhanced_model(config)
         else:
-            # Infer configuration from the saved weights
-            # Check the output projection layer to determine number of primitives
-            if "output_proj.weight" in checkpoint["model_state_dict"]:
-                num_primitives = checkpoint["model_state_dict"]["output_proj.weight"].shape[0]
+            # Infer configuration from checkpoint
+            state_dict = checkpoint["model_state_dict"]
+            
+            # Infer number of primitives from output layer
+            for key, value in state_dict.items():
+                if "output_layer" in key or "classifier" in key:
+                    num_primitives = value.shape[0]
+                    break
             else:
-                num_primitives = 17  # Default for persistent model
+                # Default to current primitive count
+                num_primitives = len(self.primitives)
             
-            # Check input embedding to determine max_colors
-            if "input_embedding.weight" in checkpoint["model_state_dict"]:
-                max_colors = checkpoint["model_state_dict"]["input_embedding.weight"].shape[0]
-            else:
-                max_colors = 21  # Default for persistent model
-            
-            # The architecture adds 1 to max_colors, so we need to subtract 1
-            # to match the saved weights
-            max_colors = max_colors - 1
-            
-            # Count transformer layers
-            num_layers = 0
-            for key in checkpoint["model_state_dict"].keys():
-                if "transformer.layers." in key:
-                    layer_num = int(key.split(".")[2])
-                    num_layers = max(num_layers, layer_num + 1)
-            
-            if num_layers == 0:
-                num_layers = 2  # Default for persistent model
-            
-            print(f"📋 Inferred model config: {num_primitives} primitives, {max_colors} colors, {num_layers} layers")
-            
-            model = create_neural_guide(
-                num_primitives=num_primitives,
-                grid_size=48,
-                max_colors=max_colors,
-                embed_dim=128,
-                num_layers=num_layers,
-                num_heads=8,
-                dropout=0.1,
-            )
-
+            config = {
+                'max_colors': 21,
+                'embed_dim': 256,
+                'num_primitives': num_primitives,
+                'num_layers': 4,
+                'max_grid_size': 30
+            }
+            model = create_enhanced_model(config)
+        
         # Load weights
         model.load_state_dict(checkpoint["model_state_dict"])
         model.to(self.device)
         model.eval()
-
-        print(f"✓ Loaded enhanced neural guide from {model_path}")
+        
+        print(f"✅ Loaded enhanced neural guide from {self.model_path}")
+        print(f"📋 Model config: {config['num_primitives']} primitives")
+        
         return model
-
-    def predict_primitives(
-        self, demo_pairs: List[Tuple[np.ndarray, np.ndarray]]
-    ) -> List[str]:
-        """Use the enhanced neural guide to predict primitives."""
+    
+    def predict_primitives(self, demo_pairs: List[Tuple[np.ndarray, np.ndarray]]) -> List[str]:
+        """Predict primitives using the neural guide."""
         if not demo_pairs:
-            return self.primitive_names[: self.top_k_primitives]
-
+            return list(self.primitives.keys())[:self.top_k_primitives]
+        
         # Use the first demonstration pair for prediction
         input_grid, output_grid = demo_pairs[0]
-
-        # Pad grids to expected size
-        input_grid_padded = pad_to_shape(input_grid, (48, 48))
-        output_grid_padded = pad_to_shape(output_grid, (48, 48))
-
-        # Convert to tensors
-        input_tensor = (
-            torch.from_numpy(input_grid_padded).unsqueeze(0).long().to(self.device)
-        )
-        output_tensor = (
-            torch.from_numpy(output_grid_padded).unsqueeze(0).long().to(self.device)
-        )
-
+        
+        # Pad input to expected size (30x30)
+        input_grid_padded = pad_to_shape(input_grid, (30, 30))
+        
+        # Convert to tensor
+        input_tensor = torch.from_numpy(input_grid_padded).unsqueeze(0).long().to(self.device)
+        
         # Get predictions
         with torch.no_grad():
-            logits = self.neural_guide(input_tensor, output_tensor)
-            probabilities = torch.sigmoid(logits).squeeze(0).cpu().numpy()
-
-        # Rank primitives by probability
-        primitive_scores = list(zip(self.primitive_names, probabilities))
-        primitive_scores.sort(key=lambda x: x[1], reverse=True)
-
-        # Return top-k primitives
-        top_primitives = [
-            name for name, score in primitive_scores[: self.top_k_primitives]
-        ]
-
-        return top_primitives
-
-    def _extract_colors(self, demo_pairs):
-        """Extract all unique colors present in the demonstration grids."""
-        colors = set()
-        for inp, out in demo_pairs:
-            colors.update(np.unique(inp))
-            colors.update(np.unique(out))
-        colors.discard(0)  # Ignore background
-        return list(colors)
-
-    def _extract_objects(self, demo_pairs):
-        """Extract all unique objects from demonstration grids."""
-        objects = []
-        for inp, _ in demo_pairs:
-            objs = segment_grid(inp)
-            objects.extend(objs)
-        return objects
-
-    def _generate_dynamic_primitives(self, demo_pairs):
-        """Generate dynamic primitives for the current task."""
-        colors = self._extract_colors(demo_pairs)
-        objects = self._extract_objects(demo_pairs)
-        dynamic_primitives = {}
-
-        # Color-based primitives
-        for c1 in colors:
-            for c2 in colors:
-                if c1 != c2:
-                    pname = f"replace_color_{c1}_{c2}"
-                    dynamic_primitives[pname] = partial(
-                        replace_color, old_color=c1, new_color=c2
-                    )
-
-        # Object-based primitives
-        if objects:
-            sizes = [obj["size"] for obj in objects]
-            if sizes:
-                min_size = min(sizes)
-                max_size = max(sizes)
-
-                # Size-based selection primitives (removed - functions don't exist)
-                pass
-
-        # Add base primitives
-        for name, func in self.primitives.items():
-            dynamic_primitives[name] = func
-
-        return dynamic_primitives
-
-    def _test_time_training(self, demo_pairs):
-        """Perform test-time training on the current task."""
-        if not self.use_ttt or len(demo_pairs) < 2:
-            return
-
-        print(f"🔄 Performing test-time training ({self.ttt_steps} steps)")
-
-        # Prepare training data
-        train_inputs = []
-        train_outputs = []
-        train_targets = []
-
-        for inp, out in demo_pairs:
-            inp_padded = pad_to_shape(inp, (48, 48))
-            out_padded = pad_to_shape(out, (48, 48))
-
-            train_inputs.append(
-                torch.from_numpy(inp_padded).unsqueeze(0).long().to(self.device)
-            )
-            train_outputs.append(
-                torch.from_numpy(out_padded).unsqueeze(0).long().to(self.device)
-            )
-
-            # Create target labels (multi-hot encoding)
-            target = torch.zeros(len(self.primitive_names)).to(self.device)
-            # For TTT, we'll use a simple heuristic based on grid differences
-            if not np.array_equal(inp, out):
-                # If grids are different, predict some common primitives
-                common_prims = ["rotate90", "horizontal_mirror", "vertical_mirror"]
-                for prim in common_prims:
-                    if prim in self.primitive_names:
-                        target[self.primitive_names.index(prim)] = 1.0
-            train_targets.append(target)
-
-        # Set up optimizer for TTT
-        optimizer = optim.Adam(self.neural_guide.parameters(), lr=1e-5)
-        criterion = nn.BCEWithLogitsLoss()
-
-        # TTT loop
-        self.neural_guide.train()
-        for step in range(self.ttt_steps):
-            total_loss = 0.0
-
-            for inp, out, target in zip(train_inputs, train_outputs, train_targets):
-                optimizer.zero_grad()
-
-                logits = self.neural_guide(inp, out)
-                loss = criterion(logits.squeeze(0), target)
-
-                loss.backward()
-                optimizer.step()
-
-                total_loss += loss.item()
-
-            if step % 5 == 0:
-                print(
-                    f"  TTT step {step+1}/{self.ttt_steps}, loss: {total_loss/len(train_inputs):.4f}"
-                )
-
-        self.neural_guide.eval()
-        print(f"✅ Test-time training completed")
-
-    def solve(self, demo_pairs, max_search_depth=None, beam_width=None):
-        """Solve the task using enhanced components."""
+            top_indices, top_probs = self.neural_guide.predict_primitives(input_tensor, top_k=self.top_k_primitives)
+            
+            # Convert indices to primitive names
+            predicted_primitives = []
+            primitive_names = list(self.primitives.keys())
+            for idx in top_indices[0]:
+                if idx < len(primitive_names):
+                    predicted_primitives.append(primitive_names[idx])
+        
+        return predicted_primitives
+    
+    def solve(self, demo_pairs: List[Tuple[np.ndarray, np.ndarray]]) -> Optional[Callable]:
+        """Solve the task using enhanced neuro-symbolic approach."""
         print(f"🎯 Solving task with {len(demo_pairs)} demonstration pairs")
-
-        # Test-time training
-        if self.use_ttt:
-            self._test_time_training(demo_pairs)
-
-        # Generate dynamic primitives
-        dynamic_primitives = self._generate_dynamic_primitives(demo_pairs)
-
+        
         # Get neural guide predictions
         predicted_primitives = self.predict_primitives(demo_pairs)
         print(f"🧠 Neural guide predictions: {predicted_primitives}")
-
-        # Filter primitives based on predictions
-        filtered_primitives = []
-        for prim_name, prim_func in dynamic_primitives.items():
-            if any(pred in prim_name for pred in predicted_primitives):
-                filtered_primitives.append(prim_func)
-
-        # If filtering is too restrictive, include more primitives
-        if len(filtered_primitives) < 10:
-            base_primitives = list(dynamic_primitives.values())[:20]
-            filtered_primitives.extend(base_primitives)
-
-        print(f"🔧 Using {len(filtered_primitives)} primitives for search")
-
-        # Prepare grids
-        input_grids = [np.array(inp) for inp, _ in demo_pairs]
-        output_grids = [np.array(out) for _, out in demo_pairs]
-
-        # Use enhanced beam search
+        
+        # Test-time training if enabled
+        if self.use_ttt:
+            print(f"🔄 Running test-time training...")
+            self._test_time_training(demo_pairs)
+        
+        # Perform beam search
         if self.use_enhanced_search:
-            search_depth = (
-                max_search_depth
-                if max_search_depth is not None
-                else self.max_search_depth
-            )
-            search_beam_width = (
-                beam_width if beam_width is not None else self.beam_width
-            )
-
-            print(
-                f"🔍 Using enhanced beam search: depth={search_depth}, beam_width={search_beam_width}"
-            )
-
-            program, success = enhanced_beam_search(
-                input_grids=input_grids,
-                output_grids=output_grids,
-                primitives_list=filtered_primitives,
-                max_depth=search_depth,
-                beam_width=search_beam_width,
-                verifier=verify_program,
-                max_candidates_per_depth=2000,
-                early_termination_threshold=0.1,
-                adaptive_pruning=True,
-                use_advanced_primitives=True,
-            )
+            solution = self._enhanced_beam_search(demo_pairs, predicted_primitives)
         else:
-            # Fallback to basic beam search
-            from src.symbolic_search.search import beam_search
-
-            program, success = beam_search(
-                input_grids=input_grids,
-                output_grids=output_grids,
-                primitives_list=filtered_primitives,
-                max_depth=self.max_search_depth,
-                beam_width=self.beam_width,
-                verifier=verify_program,
-            )
-
-        if success and program:
-            print(f"✅ Solution found with {len(program)} primitives")
-
-            def solution_fn(grid):
-                result = grid.copy()
-                for primitive in program:
-                    result = primitive(result)
-                return result
-
-            return solution_fn
-        else:
-            print(f"❌ No solution found")
-            return None
-
-    def solve_task(
-        self, demo_pairs: List[Tuple[np.ndarray, np.ndarray]]
-    ) -> Optional[Callable]:
-        """Main solving interface."""
-        return self.solve(demo_pairs)
+            solution = self._basic_beam_search(demo_pairs, predicted_primitives)
+        
+        return solution
+    
+    def _test_time_training(self, demo_pairs: List[Tuple[np.ndarray, np.ndarray]]):
+        """Perform test-time training on the demonstration pairs."""
+        # Prepare training data
+        train_inputs = []
+        train_targets = []
+        
+        for input_grid, output_grid in demo_pairs:
+            # Pad input to 30x30
+            inp_padded = pad_to_shape(input_grid, (30, 30))
+            input_tensor = torch.from_numpy(inp_padded).unsqueeze(0).long().to(self.device)
+            
+            # Create target (one-hot encoding)
+            target = torch.zeros(len(self.primitives)).to(self.device)
+            
+            # For now, use uniform distribution over predicted primitives
+            predicted_primitives = self.predict_primitives(demo_pairs)
+            for primitive in predicted_primitives:
+                if primitive in self.primitives:
+                    idx = list(self.primitives.keys()).index(primitive)
+                    target[idx] = 1.0 / len(predicted_primitives)
+            
+            train_inputs.append(input_tensor)
+            train_targets.append(target)
+        
+        # Quick fine-tuning
+        optimizer = torch.optim.Adam(self.neural_guide.parameters(), lr=1e-4)
+        criterion = torch.nn.BCEWithLogitsLoss()
+        
+        self.neural_guide.train()
+        for _ in range(5):  # 5 steps of fine-tuning
+            for inp, target in zip(train_inputs, train_targets):
+                optimizer.zero_grad()
+                logits = self.neural_guide(inp)
+                loss = criterion(logits, target)
+                loss.backward()
+                optimizer.step()
+        
+        self.neural_guide.eval()
+    
+    def _enhanced_beam_search(self, demo_pairs: List[Tuple[np.ndarray, np.ndarray]], predicted_primitives: List[str]) -> Optional[Callable]:
+        """Enhanced beam search with better candidate scoring."""
+        print(f"🔧 Using {len(predicted_primitives)} primitives for search")
+        print(f"🔍 Using enhanced beam search: depth={self.max_search_depth}, beam_width={self.beam_width}")
+        
+        # Initialize beam with identity function
+        beam = [(lambda grid: grid, 0.0, [])]  # (function, score, history)
+        
+        for depth in range(self.max_search_depth):
+            print(f"  Depth {depth+1}/{self.max_search_depth}: {len(beam)} candidates")
+            
+            new_candidates = []
+            
+            for current_func, current_score, history in beam:
+                # Try each predicted primitive
+                for primitive_name in predicted_primitives:
+                    if primitive_name not in self.primitives:
+                        continue
+                    
+                    primitive_func = self.primitives[primitive_name]
+                    
+                    # Compose function
+                    def compose_functions(f1, f2):
+                        return lambda grid: f2(f1(grid))
+                    
+                    new_func = compose_functions(current_func, primitive_func)
+                    
+                    # Evaluate on demonstration pairs
+                    score = self._evaluate_candidate(new_func, demo_pairs)
+                    
+                    # Add to candidates
+                    new_history = history + [primitive_name]
+                    new_candidates.append((new_func, score, new_history))
+                    
+                    # Early termination if perfect score
+                    if score >= 1.0:
+                        print(f"  ✅ Perfect solution found at depth {depth+1}: {new_history}")
+                        return new_func
+            
+            # Select top candidates for next iteration
+            new_candidates.sort(key=lambda x: x[1], reverse=True)
+            beam = new_candidates[:self.beam_width]
+            
+            if not beam:
+                print(f"  ❌ No candidates generated at depth {depth+1}")
+                break
+        
+        # Return best solution
+        if beam:
+            best_func, best_score, best_history = beam[0]
+            print(f"  🏆 Best solution found: score={best_score:.3f}, history={best_history}")
+            
+            if best_score >= 0.8:  # High confidence threshold
+                return best_func
+        
+        print(f"  ❌ No verified solution found. Best score: {beam[0][1]:.3f}" if beam else "  ❌ No candidates found")
+        return None
+    
+    def _basic_beam_search(self, demo_pairs: List[Tuple[np.ndarray, np.ndarray]], predicted_primitives: List[str]) -> Optional[Callable]:
+        """Basic beam search implementation."""
+        # Similar to enhanced but with simpler scoring
+        return self._enhanced_beam_search(demo_pairs, predicted_primitives)
+    
+    def _evaluate_candidate(self, candidate_func: Callable, demo_pairs: List[Tuple[np.ndarray, np.ndarray]]) -> float:
+        """Evaluate a candidate function on demonstration pairs."""
+        correct_count = 0
+        total_count = len(demo_pairs)
+        
+        for input_grid, expected_output in demo_pairs:
+            try:
+                actual_output = candidate_func(input_grid)
+                if np.array_equal(actual_output, expected_output):
+                    correct_count += 1
+            except Exception:
+                # Function failed, count as incorrect
+                pass
+        
+        return correct_count / total_count if total_count > 0 else 0.0
 
 
 def load_arc_task(task_path: str) -> List[Tuple[np.ndarray, np.ndarray]]:
@@ -483,7 +440,7 @@ def solve_arc_task_file(
 ) -> Optional[Callable]:
     """Solve an ARC task from a file."""
     demo_pairs = load_arc_task(task_path)
-    return solver.solve_task(demo_pairs)
+    return solver.solve(demo_pairs)
 
 
 def main():
@@ -497,13 +454,13 @@ def main():
     parser.add_argument(
         "--model_path",
         type=str,
-        default="models/neural_guide_enhanced.pth",
+        default="models/enhanced_neural_guide_best.pth",
         help="Path to enhanced neural guide model",
     )
     parser.add_argument(
         "--top_k",
         type=int,
-        default=5,
+        default=10,
         help="Number of top primitives to use from neural guide",
     )
     parser.add_argument(
@@ -515,7 +472,7 @@ def main():
     parser.add_argument(
         "--beam_width",
         type=int,
-        default=20,
+        default=25,
         help="Beam width for search",
     )
 

@@ -22,40 +22,41 @@ class MultiScaleAttention(nn.Module):
         self.num_heads = num_heads
         self.scales = scales
         
-        # Multi-head attention for each scale
+        # Create attention layers for each scale
         self.scale_attentions = nn.ModuleList([
             nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
             for _ in scales
         ])
         
-        # Scale fusion layer
-        self.scale_fusion = nn.Linear(embed_dim * len(scales), embed_dim)
+        # Layer normalization
         self.layer_norm = nn.LayerNorm(embed_dim)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass with multi-scale attention.
+        Apply multi-scale attention.
         
         Args:
             x: Input tensor of shape (batch_size, seq_len, embed_dim)
             
         Returns:
-            Enhanced tensor of shape (batch_size, seq_len, embed_dim)
+            Enhanced tensor with multi-scale attention
         """
         batch_size, seq_len, embed_dim = x.shape
         scale_outputs = []
         
         for i, scale in enumerate(self.scales):
-            # Reshape for scale-specific attention
             if scale > 1:
                 # Group tokens by scale
                 grouped_len = seq_len // scale
                 if grouped_len > 0:
-                    grouped_x = x[:, :grouped_len * scale, :].view(batch_size, grouped_len, scale * embed_dim)
+                    # Reshape to (batch_size, grouped_len, scale, embed_dim)
+                    grouped_x = x[:, :grouped_len * scale, :].view(batch_size, grouped_len, scale, embed_dim)
+                    # Average across scale dimension to get (batch_size, grouped_len, embed_dim)
+                    grouped_x = grouped_x.mean(dim=2)
                     # Apply attention within groups
                     attn_out, _ = self.scale_attentions[i](grouped_x, grouped_x, grouped_x)
-                    # Reshape back
-                    attn_out = attn_out.view(batch_size, grouped_len * scale, embed_dim)
+                    # Reshape back to original sequence length
+                    attn_out = attn_out.repeat_interleave(scale, dim=1)
                     # Pad if necessary
                     if attn_out.size(1) < seq_len:
                         padding = torch.zeros(batch_size, seq_len - attn_out.size(1), embed_dim, device=x.device)
@@ -68,9 +69,11 @@ class MultiScaleAttention(nn.Module):
             
             scale_outputs.append(attn_out)
         
-        # Concatenate and fuse scale outputs
-        concatenated = torch.cat(scale_outputs, dim=-1)
-        fused = self.scale_fusion(concatenated)
+        # Average the scale outputs instead of concatenating to maintain embed_dim
+        if len(scale_outputs) > 1:
+            fused = torch.stack(scale_outputs, dim=0).mean(dim=0)
+        else:
+            fused = scale_outputs[0]
         
         # Residual connection and layer normalization
         output = self.layer_norm(x + fused)

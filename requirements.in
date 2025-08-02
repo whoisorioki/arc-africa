@@ -1,9 +1,0 @@
-torch==2.3.1+cu121
-numpy==1.26.4
-pandas
-scipy
-matplotlib
-transformers
-accelerate
-lark
---extra-index-url https://download.pytorch.org/whl/cu121
